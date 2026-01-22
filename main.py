@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 class ShopBot:
     def __init__(self):
         self.orders = {}
+        self.prices = {
+            'stars_100': {'name': '100 звезд', 'price': '1000₽'},
+            'stars_500': {'name': '500 звезд', 'price': '4500₽'},
+            'stars_1000': {'name': '1000 звезд', 'price': '8000₽'},
+            'dollars_10': {'name': '10$ (@send)', 'price': '1000₽'},
+            'dollars_50': {'name': '50$ (@send)', 'price': '4500₽'},
+            'dollars_100': {'name': '100$ (@send)', 'price': '8000₽'}
+        }
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик команды /start"""
@@ -78,24 +86,36 @@ class ShopBot:
         await query.answer()
         
         user_id = str(query.from_user.id)
+        data = query.data
         
-        if query.data == 'buy_stars':
+        # Обрабатываем разные типы кнопок
+        if data == 'buy_stars':
             await self.handle_stars_purchase(query)
-        elif query.data == 'buy_dollars':
+        elif data == 'buy_dollars':
             await self.handle_dollars_purchase(query)
-        elif query.data == 'other':
-            await self.start_other_purchase(query)
-        elif query.data == 'admin_panel':
+        elif data == 'other':
+            await self.start_other_purchase(query, context)
+        elif data == 'admin_panel':
             if user_id == ADMIN_ID:
                 await self.show_admin_panel(query)
             else:
-                await query.edit_message_text("⛔ У вас нет доступа к админ панели!")
-        elif query.data == 'view_orders':
+                await query.edit_message_text(
+                    "⛔ У вас нет доступа к админ панели!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Назад", callback_data='back_to_menu')]
+                    ])
+                )
+        elif data in ['stars_100', 'stars_500', 'stars_1000', 
+                     'dollars_10', 'dollars_50', 'dollars_100']:
+            await self.process_standard_purchase(query, data)
+        elif data == 'view_orders':
             await self.show_orders(query)
-        elif query.data == 'clear_orders':
+        elif data == 'clear_orders':
             await self.clear_orders(query)
-        elif query.data == 'back_to_menu':
+        elif data == 'back_to_menu':
             await self.back_to_menu(query)
+        elif data == 'back_to_admin':
+            await self.show_admin_panel(query)
     
     async def handle_stars_purchase(self, query):
         """Обработка покупки звезд"""
@@ -133,11 +153,15 @@ class ShopBot:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    async def start_other_purchase(self, query):
+    async def start_other_purchase(self, query, context):
         """Начало покупки другого товара"""
+        context.user_data['conversation_with'] = query.from_user.id
+        context.user_data['message_id'] = query.message.message_id
+        
         await query.edit_message_text(
             "🎁 Покупка другого товара\n\n"
-            "Введите название товара:"
+            "Введите название товара:\n\n"
+            "Для отмены введите /cancel"
         )
         return GET_PRODUCT_NAME
     
@@ -148,7 +172,8 @@ class ShopBot:
         
         await update.message.reply_text(
             f"Товар: {product_name}\n\n"
-            f"Введите количество (или 'нет' если количество не требуется):"
+            f"Введите количество (или 'нет' если количество не требуется):\n\n"
+            f"Для отмены введите /cancel"
         )
         return GET_PRODUCT_QUANTITY
     
@@ -164,25 +189,26 @@ class ShopBot:
         order_info = {
             'id': order_id,
             'user_id': user.id,
-            'username': user.username,
+            'username': user.username or 'без username',
             'first_name': user.first_name,
             'product': product_name,
             'quantity': quantity if quantity.lower() != 'нет' else '1',
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'type': 'другой товар'
         }
         
         # Сохраняем заказ
         self.orders[order_id] = order_info
         
         # Отправляем заказ администратору
-        await self.send_order_to_admin(order_info)
+        await self.send_order_to_admin(order_info, context)
         
         # Отправляем подтверждение пользователю
         await update.message.reply_text(
             f"✅ Ваш заказ принят!\n\n"
-            f"Товар: {product_name}\n"
-            f"Количество: {quantity if quantity.lower() != 'нет' else '1'}\n\n"
-            f"Администратор свяжется с вами в ближайшее время.",
+            f"🛍️ Товар: {product_name}\n"
+            f"🔢 Количество: {quantity if quantity.lower() != 'нет' else '1'}\n\n"
+            f"📞 Администратор свяжется с вами в ближайшее время.",
             reply_markup=self.get_main_keyboard()
         )
         
@@ -190,11 +216,66 @@ class ShopBot:
         context.user_data.clear()
         return ConversationHandler.END
     
-    async def send_order_to_admin(self, order_info: Dict[str, Any]) -> None:
+    async def process_standard_purchase(self, query, product_key):
+        """Обработка стандартной покупки (звезды/доллары)"""
+        product_info = self.prices.get(product_key, {})
+        product_name = product_info.get('name', 'Неизвестный товар')
+        price = product_info.get('price', 'Цена не указана')
+        
+        user = query.from_user
+        order_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        order_info = {
+            'id': order_id,
+            'user_id': user.id,
+            'username': user.username or 'без username',
+            'first_name': user.first_name,
+            'product': product_name,
+            'quantity': '1',
+            'price': price,
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'type': 'стандартный товар'
+        }
+        
+        # Сохраняем заказ
+        self.orders[order_id] = order_info
+        
+        # Отправляем заказ администратору
+        # В реальном боте нужно передать context
+        # await self.send_order_to_admin(order_info, context)
+        
+        # Для демонстрации выводим в консоль
+        self.print_order_to_console(order_info)
+        
+        # Отправляем подтверждение пользователю
+        await query.edit_message_text(
+            f"✅ Заказ оформлен!\n\n"
+            f"🛍️ Товар: {product_name}\n"
+            f"💰 Цена: {price}\n\n"
+            f"📞 Администратор свяжется с вами для оплаты.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛒 Сделать еще заказ", callback_data='back_to_menu')]
+            ])
+        )
+    
+    def print_order_to_console(self, order_info):
+        """Печать заказа в консоль (вместо отправки)"""
+        print("\n" + "="*60)
+        print(f"📦 НОВЫЙ ЗАКАЗ ДЛЯ АДМИНИСТРАТОРА {ADMIN_ID}:")
+        print("="*60)
+        print(f"🆔 ID заказа: #{order_info['id']}")
+        print(f"👤 Пользователь: {order_info['first_name']}")
+        print(f"📛 Username: @{order_info['username']}")
+        print(f"🆔 User ID: {order_info['user_id']}")
+        print(f"🛍️ Товар: {order_info['product']}")
+        print(f"💰 Цена: {order_info.get('price', 'не указана')}")
+        print(f"🔢 Количество: {order_info['quantity']}")
+        print(f"⏰ Время: {order_info['timestamp']}")
+        print("="*60 + "\n")
+    
+    async def send_order_to_admin(self, order_info: Dict[str, Any], context: ContextTypes.DEFAULT_TYPE) -> None:
         """Отправка заказа администратору"""
         try:
-            # Здесь должна быть логика отправки сообщения администратору
-            # В реальном боте используйте await context.bot.send_message()
             admin_message = (
                 f"🛒 НОВЫЙ ЗАКАЗ #{order_info['id']}\n\n"
                 f"👤 Пользователь: {order_info['first_name']}\n"
@@ -202,17 +283,18 @@ class ShopBot:
                 f"🆔 ID: {order_info['user_id']}\n"
                 f"🛍️ Товар: {order_info['product']}\n"
                 f"🔢 Количество: {order_info['quantity']}\n"
-                f"⏰ Время: {order_info['timestamp']}"
+                f"⏰ Время: {order_info['timestamp']}\n"
+                f"📋 Тип: {order_info.get('type', 'неизвестно')}"
             )
             
-            # В реальном боте раскомментируйте следующую строку:
-            # await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
+            if 'price' in order_info:
+                admin_message += f"\n💰 Цена: {order_info['price']}"
             
-            logger.info(f"Заказ отправлен администратору: {admin_message}")
-            print(f"\n{'='*50}")
-            print(f"ЗАКАЗ ДЛЯ АДМИНИСТРАТОРА {ADMIN_ID}:")
-            print(admin_message)
-            print(f"{'='*50}\n")
+            # Печатаем в консоль для демонстрации
+            self.print_order_to_console(order_info)
+            
+            # В реальном боте раскомментируйте:
+            # await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
             
         except Exception as e:
             logger.error(f"Ошибка отправки заказа администратору: {e}")
@@ -228,6 +310,7 @@ class ShopBot:
         await query.edit_message_text(
             f"👑 АДМИН ПАНЕЛЬ\n\n"
             f"Всего заказов: {len(self.orders)}\n"
+            f"Последний заказ: {list(self.orders.keys())[-1] if self.orders else 'нет'}\n\n"
             f"Выберите действие:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -235,27 +318,30 @@ class ShopBot:
     async def show_orders(self, query):
         """Показать список заказов"""
         if not self.orders:
+            keyboard = [[InlineKeyboardButton("🔙 Назад в админку", callback_data='back_to_admin')]]
             await query.edit_message_text(
                 "📭 Список заказов пуст.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Назад в админку", callback_data='admin_panel')]
-                ])
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
         
         orders_text = "📋 СПИСОК ЗАКАЗОВ:\n\n"
-        for order_id, order in self.orders.items():
+        for i, (order_id, order) in enumerate(list(self.orders.items())[-10:], 1):  # Последние 10 заказов
             orders_text += (
-                f"#{order_id}\n"
-                f"👤 {order['first_name']} (@{order['username']})\n"
-                f"🛍️ {order['product']} x {order['quantity']}\n"
-                f"⏰ {order['timestamp']}\n"
-                f"{'-'*30}\n"
+                f"{i}. #{order_id}\n"
+                f"   👤 {order['first_name']} (@{order['username']})\n"
+                f"   🛍️ {order['product']}\n"
+                f"   🔢 {order['quantity']} шт.\n"
+                f"   ⏰ {order['timestamp']}\n"
+                f"{'-'*40}\n"
             )
+        
+        if len(self.orders) > 10:
+            orders_text += f"\n... и еще {len(self.orders) - 10} заказов"
         
         keyboard = [
             [InlineKeyboardButton("🗑️ Очистить заказы", callback_data='clear_orders')],
-            [InlineKeyboardButton("🔙 Назад в админку", callback_data='admin_panel')]
+            [InlineKeyboardButton("🔙 Назад в админку", callback_data='back_to_admin')]
         ]
         
         await query.edit_message_text(
@@ -266,11 +352,10 @@ class ShopBot:
     async def clear_orders(self, query):
         """Очистить список заказов"""
         self.orders.clear()
+        keyboard = [[InlineKeyboardButton("🔙 Назад в админку", callback_data='back_to_admin')]]
         await query.edit_message_text(
             "✅ Все заказы очищены!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Назад в админку", callback_data='admin_panel')]
-            ])
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     async def back_to_menu(self, query):
@@ -279,6 +364,10 @@ class ShopBot:
         await query.edit_message_text(
             f"🌟 Kristi Shop\n\n"
             f"Привет, {user.first_name}! 👋\n\n"
+            f"✨ Мы продаем:\n"
+            f"• Звезды ⭐\n"
+            f"• Доллары 💵 (@send)\n"
+            f"• И многое другое\n\n"
             f"Выберите категорию товара:",
             reply_markup=self.get_main_keyboard()
         )
@@ -286,7 +375,7 @@ class ShopBot:
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Отмена диалога"""
         await update.message.reply_text(
-            'Диалог отменен.',
+            '❌ Диалог отменен.',
             reply_markup=self.get_main_keyboard()
         )
         return ConversationHandler.END
@@ -301,23 +390,37 @@ def main() -> None:
     
     # ConversationHandler для покупки "другого" товара
     conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(bot.start_other_purchase, pattern='^other$')],
+        entry_points=[
+            CallbackQueryHandler(bot.start_other_purchase, pattern='^other$')
+        ],
         states={
-            GET_PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_product_name)],
-            GET_PRODUCT_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_product_quantity)],
+            GET_PRODUCT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_product_name)
+            ],
+            GET_PRODUCT_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_product_quantity)
+            ],
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
     )
     
-    # Регистрируем обработчики
+    # Регистрируем обработчики в правильном порядке
     application.add_handler(CommandHandler("start", bot.start))
     application.add_handler(conv_handler)
+    
+    # Обработчик кнопок должен быть последним
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     
+    # Команда отмены
+    application.add_handler(CommandHandler("cancel", bot.cancel))
+    
     # Запускаем бота
-    print("Бот запущен...")
-    print(f"ID администратора: {ADMIN_ID}")
-    print("Ожидание сообщений...")
+    print("="*60)
+    print("🤖 Бот Kristi Shop запущен!")
+    print(f"🔑 Токен: {BOT_TOKEN[:15]}...")
+    print(f"👑 Администратор: {ADMIN_ID}")
+    print("="*60)
+    print("\nОжидание сообщений...\n")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
