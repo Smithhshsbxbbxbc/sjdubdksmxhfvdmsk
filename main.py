@@ -341,7 +341,7 @@ class ShopBot:
         user = query.from_user
         await query.message.reply_text(
             f"🌟 Kristi Shop\n\n"
-            f"Привет, {user.first_name}! 👋\n\n"
+            f"Приет, {user.first_name}! 👋\n\n"
             f"✨ Мы продаем:\n"
             f"• Звезды ⭐\n"
             f"• Доллары 💵 (@send)\n"
